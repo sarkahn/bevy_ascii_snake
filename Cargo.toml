@@ -1,8 +1,8 @@
 [package]
-name = "bevy_ascii_snake" # ToDo
+name = "bevy_ascii_snake"
 version = "0.1.0"
 publish = false
-authors = ["Sark"] # ToDo: you are the author ;)
+authors = ["Sark"]
 edition = "2021"
 exclude = ["dist", "build", "assets", "credits"]
 

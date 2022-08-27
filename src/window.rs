@@ -1,5 +1,4 @@
-
-use bevy::prelude::{NonSend, Plugin, ClearColor, Color, Msaa, WindowDescriptor};
+use bevy::prelude::{ClearColor, Color, Msaa, NonSend, Plugin, WindowDescriptor};
 use bevy::window::WindowId;
 use bevy::winit::WinitWindows;
 use std::io::Cursor;
@@ -10,15 +9,15 @@ pub struct WindowPlugin;
 impl Plugin for WindowPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.add_startup_system(set_window_icon)
-        .insert_resource(Msaa { samples: 1 })
-        .insert_resource(ClearColor(Color::rgb(0.4, 0.4, 0.4)))
-        .insert_resource(WindowDescriptor {
-            width: 800.,
-            height: 600.,
-            title: "Ascii Snake".to_string(), // ToDo
-            canvas: Some("#bevy".to_owned()),
-            ..Default::default()
-        });
+            .insert_resource(Msaa { samples: 1 })
+            .insert_resource(ClearColor(Color::rgb(0.4, 0.4, 0.4)))
+            .insert_resource(WindowDescriptor {
+                width: 800.,
+                height: 600.,
+                title: "Ascii Snake".to_string(), // ToDo
+                canvas: Some("#bevy".to_owned()),
+                ..Default::default()
+            });
     }
 }
 
