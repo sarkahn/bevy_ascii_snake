@@ -16,6 +16,7 @@ impl Plugin for WindowPlugin {
                 height: 680.,
                 title: "Ascii Snake".to_string(), // ToDo
                 canvas: Some("#bevy".to_owned()),
+                fit_canvas_to_parent: true,
                 ..Default::default()
             });
     }
