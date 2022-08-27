@@ -12,8 +12,8 @@ impl Plugin for WindowPlugin {
             .insert_resource(Msaa { samples: 1 })
             .insert_resource(ClearColor(Color::rgb(0.4, 0.4, 0.4)))
             .insert_resource(WindowDescriptor {
-                width: 800.,
-                height: 600.,
+                width: 680.,
+                height: 680.,
                 title: "Ascii Snake".to_string(), // ToDo
                 canvas: Some("#bevy".to_owned()),
                 ..Default::default()

@@ -13,7 +13,7 @@ use rand::rngs::ThreadRng;
 use rand::Rng;
 use window::WindowPlugin;
 
-const STAGE_SIZE: IVec2 = IVec2::from_array([40, 40]);
+const STAGE_SIZE: IVec2 = IVec2::from_array([40, 36]);
 const START_SPEED: f32 = 8.0;
 const ACCELERATION: f32 = 0.35;
 const MAX_SPEED: f32 = 35.;
