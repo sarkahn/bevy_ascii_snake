@@ -12,64 +12,50 @@ use rand::Rng;
 use rand::rngs::ThreadRng;
 use window::WindowPlugin;
 
+const STAGE_SIZE: IVec2 = IVec2::from_array([40,40]);
+const ACCELERATION: f32 = 0.35;
+const MAX_SPEED: f32 = 35.;
+const BODY_GLYPH: char = '█';
+const FOOD_GLYPH: char = '☼';
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(TerminalPlugin)
         .add_plugin(WindowPlugin)
         .add_startup_system(setup)
-        .add_system(drive)
-        .add_system(render)
         .add_system(make_food)
-        .add_system(eat)
+        .add_system(drive.after(make_food))
+        .add_system(eat.after(drive))
+        .add_system(grow.after(eat))
+        .add_system(render.after(grow))
+        .add_system(die.after(render))
         .run();
 }
 
 #[derive(Component)]
 pub struct Food {
     pos: IVec2,
-    glyph: char,
 }
 
 #[derive(Component)]
 struct GridPos(IVec2);
 
-impl std::ops::DerefMut for GridPos {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl std::ops::Deref for GridPos {
-    type Target = IVec2;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 #[derive(Component)]
 struct Steering {
     cell_pos: f32,
     dir: IVec2,
+    prev: IVec2,
     speed: f32,
 }
 
 #[derive(Component)]
 struct Body(VecDeque<IVec2>);
 
-impl std::ops::DerefMut for Body {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl std::ops::Deref for Body {
-    type Target = VecDeque<IVec2>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+#[derive(Component)]
+struct Grow {
+    turns: usize,
+    pos: IVec2,
 }
 
 fn setup(
@@ -79,14 +65,15 @@ fn setup(
     term.draw_border(BorderGlyphs::single_line());
 
     commands.spawn_bundle(TerminalBundle::from(term))
-    .insert(ToWorld::default())
-    .insert(AutoCamera);
+      .insert(ToWorld::default())
+      .insert(AutoCamera);
 
     let body = Body(VecDeque::from(vec![IVec2::ZERO]));
     let steering = Steering {
         cell_pos: 0.5,
         dir: [0,1].into(),
         speed: 5.0,
+        prev: IVec2::ZERO,
     };
     let grid_pos = GridPos([0,0].into());
     commands.spawn().insert(body).insert(steering).insert(grid_pos);
@@ -118,7 +105,7 @@ fn drive(
             dir.x = 1;
         }
 
-        if dir != IVec2::ZERO && dir != -steering.dir {
+        if dir != IVec2::ZERO && pos.0 + dir != steering.prev {
             steering.dir = dir;
         }
 
@@ -129,9 +116,11 @@ fn drive(
         }
 
         steering.cell_pos -= 1.0;
-        let next = *body.back().unwrap() + steering.dir;
-        body.push_back(next);
-        body.pop_front();
+        let body = &mut body.0;
+        let next = *body.front().unwrap() + steering.dir;
+        steering.prev = pos.0;
+        body.push_front(next);
+        body.pop_back();
 
         *pos = GridPos(next);
     }
@@ -145,16 +134,17 @@ fn make_food(
     let mut rng = ThreadRng::default();
     if q_food.is_empty() {
         if let Ok(body) = q_body.get_single() {
+            let body = &body.0;
             loop {
-                let pos = rand_pos(&mut rng, IVec2::splat(40));
-                
-                if body.contains(&pos) {
+                let pos = rand_pos(&mut rng, STAGE_SIZE);
+                let pos = pos - STAGE_SIZE / 2;
+
+                if body.contains(&pos) || !in_bounds(pos) {
                     continue;
                 }
 
                 commands.spawn().insert(Food {
                     pos,
-                    glyph: '☼',
                 });
                 break;
             }
@@ -169,34 +159,102 @@ fn rand_pos(rng: &mut ThreadRng, dimensions: IVec2) -> IVec2 {
 }
 
 fn render(
-    mut q_term: Query<&mut Terminal>,
+    mut q_term: Query<(&mut Terminal, &ToWorld)>,
     q_snake: Query<&Body, Changed<Body>>,
     q_food: Query<&Food>,
 ) {
     if let Ok(body) = q_snake.get_single() {
-        let mut term = q_term.single_mut();
+        let body = &body.0;
+        let (mut term, tw) = q_term.single_mut();
+
         term.clear();
         term.draw_border(BorderGlyphs::single_line());
         for food in &q_food {
             // Add one to account for borders
-            term.put_char(food.pos + IVec2::ONE, food.glyph);
+            let pos = food.pos + STAGE_SIZE / 2;
+            term.put_char(pos, FOOD_GLYPH);
         }
-        for point in body.iter() {
-            term.put_char((*point).pivot(Pivot::Center), '█');
+        for pos in body.iter() {
+            let pos = *pos + STAGE_SIZE / 2;
+            term.put_char(pos, BODY_GLYPH);
         }
     }
 }
 
 fn eat(
-    q_food: Query<(Entity,&Food)>,
-    q_snake: Query<(&Body, &Steering, &GridPos), Changed<GridPos>>,
+    q_food: Query<(Entity, &Food)>,
+    mut q_snake: Query<(&Body, &mut Steering, &GridPos), Changed<GridPos>>,
     mut commands: Commands,
 ) {
-    for (body, steering, pos) in &q_snake {
+    for (body, mut steering, pos) in &mut q_snake {
         for (e_food, food) in &q_food {
+            //println!("Snake pos {}, food pos {}", pos.0, food.pos);
             if pos.0 == food.pos {
                 commands.entity(e_food).despawn();
+                steering.speed = (steering.speed + ACCELERATION).min(MAX_SPEED);
+                commands.spawn().insert(Grow {
+                    turns: body.0.len(),
+                    pos: pos.0,
+                });
             }
         } 
     }
+}
+
+fn grow(
+    mut q_grow: Query<(Entity, &mut Grow)>,
+    mut q_snake: Query<(&mut Body, &GridPos), Changed<GridPos>>, 
+    mut commands: Commands,
+) {
+    if q_snake.is_empty() {
+        return;
+    }
+
+    for _ in &q_snake {
+        for (_, mut grow) in &mut q_grow {
+            grow.turns -= 1;
+        }
+    }
+
+    let mut body = q_snake.single_mut().0;
+    for (entity, grow) in &q_grow {
+        if grow.turns != 0 {
+            continue;
+        }
+        body.0.push_back(grow.pos);
+        commands.entity(entity).despawn();
+    }
+}
+
+fn die(
+    q_snake: Query<(Entity, &GridPos, &Body), Changed<GridPos>>,
+    q_food: Query<Entity, With<Food>>,
+    mut q_term: Query<&mut Terminal>,
+    mut commands: Commands,
+) {
+    let mut game_over = |entity| {
+        commands.entity(entity).despawn();
+        q_food.for_each(|e|commands.entity(e).despawn());
+        let mut term = q_term.single_mut();
+        term.clear();
+        term.put_string([-5,1].pivot(Pivot::Center), "Game Over!");
+    };
+
+    if let Ok((snake_entity, pos, body)) = q_snake.get_single() {
+        if !in_bounds(pos.0) {
+            game_over(snake_entity);
+        }
+
+        for p in body.0.iter().skip(1) {
+            if *p == pos.0 {
+                game_over(snake_entity);
+            }
+        }
+    }
+}
+
+fn in_bounds(p: IVec2) -> bool {
+    let half_stage = STAGE_SIZE / 2;
+
+    !(p.cmple(-half_stage).any() || p.cmpge(half_stage).any())
 }
