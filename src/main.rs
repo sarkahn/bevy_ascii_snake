@@ -1,52 +1,69 @@
-// disable console on windows for release builds
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-mod window;
-
 use std::collections::VecDeque;
+use std::time::Duration;
 
+use bevy::audio::Volume;
 use bevy::prelude::*;
-use bevy::DefaultPlugins;
-use bevy_ascii_terminal::prelude::*;
-use bevy_kira_audio::{Audio, AudioControl, AudioPlugin, AudioSource};
-use rand::rngs::ThreadRng;
+use bevy_ascii_terminal::*;
 use rand::Rng;
-use window::WindowPlugin;
+use rand::rngs::ThreadRng;
 
-const STAGE_SIZE: IVec2 = IVec2::from_array([40, 40]);
-const START_SPEED: f32 = 8.0;
-const ACCELERATION: f32 = 0.35;
-const MAX_SPEED: f32 = 35.;
+const STAGE_SIZE: UVec2 = UVec2::from_array([20, 20]);
+const START_DIR: IVec2 = IVec2::Y;
 const BODY_GLYPH: char = '█';
 const FOOD_GLYPH: char = '☼';
 
-#[derive(Debug, StageLabel, Clone, Eq, PartialEq, Hash)]
-enum GameState {
-    Begin,
-    Playing,
-}
+const INITIAL_TICK_DELAY: f32 = 0.15;
+const ACCELERATION: f32 = 0.01;
+const MIN_TICK_DELAY: f32 = 0.05;
+
+#[derive(Event)]
+struct Restart;
+
+#[derive(Resource)]
+struct DingSound(Handle<AudioSource>);
+
+#[derive(Resource)]
+struct NomSound(Handle<AudioSource>);
+
+#[derive(Resource)]
+struct OuchSound(Handle<AudioSource>);
+
+#[derive(Resource, Deref, DerefMut)]
+struct TickRate(Timer);
 
 fn main() {
     App::new()
-        .add_plugin(WindowPlugin)
-        .add_plugins(DefaultPlugins)
-        .add_plugin(TerminalPlugin)
-        .add_plugin(AudioPlugin)
+        .add_plugins((
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    fit_canvas_to_parent: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            TerminalPlugins,
+        ))
         .init_resource::<FoodCount>()
-        .init_resource::<Sounds>()
-        .add_state(GameState::Begin)
-        .add_startup_system(setup)
-        .add_system_set(SystemSet::on_update(GameState::Begin).with_system(start))
-        .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(spawn))
-        .add_system_set(
-            SystemSet::on_update(GameState::Playing)
-                .with_system(make_food)
-                .with_system(drive.after(make_food))
-                .with_system(eat.after(drive))
-                .with_system(grow.after(eat))
-                .with_system(render.after(grow))
-                .with_system(die.after(render)),
+        .insert_resource(TickRate(Timer::new(
+            Duration::from_secs_f32(INITIAL_TICK_DELAY),
+            TimerMode::Repeating,
+        )))
+        .add_event::<Restart>()
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (
+                spawn.run_if(on_event::<Restart>),
+                make_food,
+                input,
+                vroom,
+                grow,
+                eat,
+                die,
+            )
+                .chain(),
         )
+        .add_systems(PostUpdate, render)
         .run();
 }
 
@@ -55,18 +72,16 @@ pub struct Food {
     pos: IVec2,
 }
 
-#[derive(Component)]
+#[derive(Component, Deref, DerefMut)]
 struct GridPos(IVec2);
 
 #[derive(Component)]
-struct Steering {
-    cell_pos: f32,
-    dir: IVec2,
-    prev: IVec2,
-    speed: f32,
+struct GameState {
+    curr_dir: IVec2,
+    next_dir: IVec2,
 }
 
-#[derive(Component)]
+#[derive(Component, Deref, DerefMut)]
 struct Body(VecDeque<IVec2>);
 
 #[derive(Component)]
@@ -75,109 +90,86 @@ struct Grow {
     pos: IVec2,
 }
 
-#[derive(Default)]
+#[derive(Default, Resource, Deref, DerefMut)]
 struct FoodCount(usize);
 
-#[derive(Default)]
-struct Sounds {
-    nom: Handle<AudioSource>,
-    ouch: Handle<AudioSource>,
-    ding: Handle<AudioSource>,
+fn setup(mut commands: Commands, server: Res<AssetServer>) {
+    let mut term = Terminal::new(STAGE_SIZE + 2);
+    term.put_string([0, 2].pivot(Pivot::Center), "ASCII SNAKE".fg(color::BLUE));
+    term.put_string([0, 1].pivot(Pivot::Center), "Use WASD to move");
+    term.put_string([0, 0].pivot(Pivot::Center), "Press Space to Begin");
+
+    commands.insert_resource(DingSound(server.load("ding.wav")));
+    commands.insert_resource(NomSound(server.load("nom.wav")));
+    commands.insert_resource(OuchSound(server.load("ouch.wav")));
+
+    commands.spawn((term, TerminalBorder::single_line()));
+    commands.spawn(TerminalCamera::new());
 }
 
-fn setup(mut commands: Commands, server: Res<AssetServer>, mut sfx: ResMut<Sounds>) {
-    let mut term = Terminal::with_size(STAGE_SIZE + 2);
-    term.draw_border(BorderGlyphs::single_line());
-    term.draw_box(
-        [0, 5].pivot(Pivot::Center),
-        [13, 3],
-        UiBox::double_line().color_fill(Color::GRAY, Color::BLACK),
-    );
-    term.put_string([-5, 5].pivot(Pivot::Center), "ASCII SNAKE".fg(Color::BLUE));
-    term.put_string([-6, 2].pivot(Pivot::Center), "Use WASD to move");
-    term.put_string([-9, 1].pivot(Pivot::Center), "Press Space to Begin");
-
-    commands
-        .spawn_bundle(TerminalBundle::from(term))
-        .insert(AutoCamera);
-
-    sfx.nom = server.load("nom.wav");
-    sfx.ouch = server.load("ouch.wav");
-    sfx.ding = server.load("ding.wav");
-}
-
-fn start(
-    input: Res<Input<KeyCode>>,
-    mut state: ResMut<State<GameState>>,
-    audio: Res<Audio>,
-    sfx: Res<Sounds>,
+fn spawn(
+    mut commands: Commands,
+    mut count: ResMut<FoodCount>,
+    ding: Res<DingSound>,
+    mut tick: ResMut<TickRate>,
 ) {
-    if input.just_pressed(KeyCode::Space) {
-        state.set(GameState::Playing).unwrap();
-        audio.play(sfx.ding.clone());
-    }
-}
-
-fn spawn(mut commands: Commands, mut count: ResMut<FoodCount>) {
     let body = Body(VecDeque::from(vec![IVec2::ZERO]));
-    let steering = Steering {
-        cell_pos: 0.5,
-        dir: [0, 1].into(),
-        speed: START_SPEED,
-        prev: IVec2::ZERO,
+    let state = GameState {
+        curr_dir: START_DIR,
+        next_dir: START_DIR,
     };
     let grid_pos = GridPos([0, 0].into());
-    commands
-        .spawn()
-        .insert(body)
-        .insert(steering)
-        .insert(grid_pos);
+    commands.spawn((body, state, grid_pos));
     count.0 = 0;
+    commands.spawn((AudioPlayer::new(ding.0.clone()), PlaybackSettings::DESPAWN));
+    tick.0
+        .set_duration(Duration::from_secs_f32(INITIAL_TICK_DELAY));
 }
 
-fn drive(
-    time: Res<Time>,
-    input: Res<Input<KeyCode>>,
-    mut q_snake: Query<(&mut Body, &mut Steering, &mut GridPos)>,
+fn input(
+    input: Res<ButtonInput<KeyCode>>,
+    mut q_snake: Query<&mut GameState>,
+    mut restart: EventWriter<Restart>,
 ) {
-    let dt = time.delta_seconds();
-
-    for (mut body, mut steering, mut pos) in &mut q_snake {
-        let mut dir = IVec2::ZERO;
-        if input.just_pressed(KeyCode::W) {
-            dir.y = 1;
+    let Ok(mut state) = q_snake.get_single_mut() else {
+        if input.just_pressed(KeyCode::Space) {
+            restart.send(Restart);
         }
+        return;
+    };
+    let left = [KeyCode::KeyA, KeyCode::ArrowLeft];
+    let right = [KeyCode::KeyD, KeyCode::ArrowRight];
+    let up = [KeyCode::KeyW, KeyCode::ArrowUp];
+    let down = [KeyCode::KeyS, KeyCode::ArrowDown];
 
-        if input.just_pressed(KeyCode::S) {
-            dir.y = -1;
+    let hor = input.any_pressed(right) as i32 - input.any_pressed(left) as i32;
+    let ver = input.any_pressed(up) as i32 - input.any_pressed(down) as i32;
+
+    if hor == 0 && ver == 0 {
+        return;
+    }
+    state.next_dir = [hor, if hor == 0 { ver } else { 0 }].into();
+}
+
+fn vroom(
+    mut q_snake: Query<(&mut Body, &mut GameState, &mut GridPos)>,
+    time: Res<Time>,
+    mut tick: ResMut<TickRate>,
+) {
+    tick.tick(time.delta());
+
+    if tick.finished() {
+        tick.reset();
+        for (mut body, mut state, mut pos) in &mut q_snake {
+            if state.next_dir != -state.curr_dir {
+                state.curr_dir = state.next_dir;
+            }
+
+            let next = body.front().unwrap() + state.curr_dir;
+            body.push_front(next);
+            body.pop_back();
+            *pos = GridPos(next);
         }
-
-        if input.just_pressed(KeyCode::A) {
-            dir.x = -1;
-        }
-
-        if input.just_pressed(KeyCode::D) {
-            dir.x = 1;
-        }
-
-        if dir != IVec2::ZERO && pos.0 + dir != steering.prev {
-            steering.dir = dir;
-        }
-
-        steering.cell_pos += steering.speed * dt;
-
-        if steering.cell_pos < 1.0 {
-            continue;
-        }
-
-        steering.cell_pos -= 1.0;
-        let body = &mut body.0;
-        let next = *body.front().unwrap() + steering.dir;
-        steering.prev = pos.0;
-        body.push_front(next);
-        body.pop_back();
-
-        *pos = GridPos(next);
     }
 }
 
@@ -187,15 +179,16 @@ fn make_food(mut commands: Commands, q_food: Query<&Food>, q_body: Query<&Body>)
         if let Ok(body) = q_body.get_single() {
             let body = &body.0;
             loop {
-                let x = rng.gen_range(0..STAGE_SIZE.x);
-                let y = rng.gen_range(0..STAGE_SIZE.y);
-                let pos = IVec2::new(x, y) - STAGE_SIZE / 2;
+                let size = STAGE_SIZE.as_ivec2();
+                let x = rng.gen_range(0..size.x);
+                let y = rng.gen_range(0..size.y);
+                let pos = IVec2::new(x, y) - size / 2;
 
-                if body.contains(&pos) || !in_bounds(pos) {
+                if body.contains(&pos) {
                     continue;
                 }
 
-                commands.spawn().insert(Food { pos });
+                commands.spawn(Food { pos });
                 break;
             }
         }
@@ -207,18 +200,17 @@ fn render(
     q_snake: Query<&Body, Changed<Body>>,
     q_food: Query<&Food>,
 ) {
+    let mut term = q_term.single_mut();
     if let Ok(body) = q_snake.get_single() {
         let body = &body.0;
-        let mut term = q_term.single_mut();
 
         term.clear();
-        term.draw_border(BorderGlyphs::single_line());
         for food in &q_food {
-            let pos = food.pos + STAGE_SIZE / 2;
+            let pos = food.pos + STAGE_SIZE.as_ivec2() / 2;
             term.put_char(pos, FOOD_GLYPH);
         }
         for pos in body.iter() {
-            let pos = *pos + STAGE_SIZE / 2;
+            let pos = *pos + STAGE_SIZE.as_ivec2() / 2;
             term.put_char(pos, BODY_GLYPH);
         }
     }
@@ -226,23 +218,26 @@ fn render(
 
 fn eat(
     q_food: Query<(Entity, &Food)>,
-    mut q_snake: Query<(&Body, &mut Steering, &GridPos), Changed<GridPos>>,
+    q_snake: Query<(&Body, &GridPos), Changed<GridPos>>,
     mut commands: Commands,
     mut count: ResMut<FoodCount>,
-    audio: Res<Audio>,
-    sfx: Res<Sounds>,
+    nom: Res<NomSound>,
+    mut tick: ResMut<TickRate>,
 ) {
-    for (body, mut steering, pos) in &mut q_snake {
+    for (body, pos) in &q_snake {
         for (e_food, food) in &q_food {
             if pos.0 == food.pos {
                 count.0 += 1;
                 commands.entity(e_food).despawn();
-                steering.speed = (steering.speed + ACCELERATION).min(MAX_SPEED);
-                commands.spawn().insert(Grow {
+                commands.spawn(Grow {
                     turns: count.0,
                     pos: *body.0.back().unwrap(),
                 });
-                audio.play(sfx.nom.clone());
+
+                commands.spawn((AudioPlayer::new(nom.0.clone()), PlaybackSettings::DESPAWN));
+                let mut dur = tick.duration().as_secs_f32();
+                dur = (dur - ACCELERATION).max(MIN_TICK_DELAY);
+                tick.set_duration(Duration::from_secs_f32(dur));
             }
         }
     }
@@ -277,36 +272,37 @@ fn die(
     q_food: Query<Entity, With<Food>>,
     mut q_term: Query<&mut Terminal>,
     mut commands: Commands,
-    mut state: ResMut<State<GameState>>,
-    audio: Res<Audio>,
-    sfx: Res<Sounds>,
+    ouch: Res<OuchSound>,
 ) {
     let mut game_over = |entity| {
         commands.entity(entity).despawn();
-        q_food.for_each(|e| commands.entity(e).despawn());
+        q_food.iter().for_each(|e| commands.entity(e).despawn());
         let mut term = q_term.single_mut();
         term.clear();
-        term.put_string([-4, 1].pivot(Pivot::Center), "Game Over!");
-        term.put_string([-12, 0].pivot(Pivot::Center), "Press Spacebar to restart");
-        state.set(GameState::Begin).unwrap();
-        audio.play(sfx.ouch.clone());
+        term.put_string(
+            [0, 0].pivot(Pivot::Center),
+            "Game Over!\nPress Space to Restart",
+        );
+        commands.spawn((
+            AudioPlayer::new(ouch.0.clone()),
+            PlaybackSettings::DESPAWN.with_volume(Volume::new(0.5)),
+        ));
     };
 
-    if let Ok((snake_entity, pos, body)) = q_snake.get_single() {
-        if !in_bounds(pos.0) {
-            game_over(snake_entity);
+    if let Ok((entity, pos, body)) = q_snake.get_single() {
+        let min = -STAGE_SIZE.as_ivec2() / 2;
+        let max = min + STAGE_SIZE.as_ivec2();
+        let bounds = IRect::from_corners(min, max);
+        if !bounds.contains(pos.0) {
+            game_over(entity);
+            return;
         }
 
         for p in body.0.iter().skip(1) {
             if *p == pos.0 {
-                game_over(snake_entity);
+                game_over(entity);
+                return;
             }
         }
     }
-}
-
-fn in_bounds(p: IVec2) -> bool {
-    let half_stage = STAGE_SIZE / 2;
-
-    !(p.cmple(-half_stage).any() || p.cmpge(half_stage + 1).any())
 }

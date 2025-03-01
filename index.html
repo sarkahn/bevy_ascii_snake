@@ -1,20 +1,16 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="utf-8"/>
-        <title>Bevy Ascii Snake</title> <!-- ToDo -->
-        <link data-trunk rel="copy-dir" href="assets"/>
-        <link data-trunk rel="copy-dir" href="credits"/>
-        <link data-trunk rel="copy-file" href="build/windows/icon.ico"/>
-        <link rel="icon" href="icon.ico">
-        <link data-trunk rel="inline" href="build/web/styles.css"/>
-    </head>
-    <body>
-        <link data-trunk rel="inline" href="build/web/sound.js"/>
-        <div class="game-container">
-            <canvas id="bevy">
-                Javascript and support for canvas is required
-            </canvas>
-        </div>
-    </body>
+
+<body style="margin: 0px;">
+  <script type="module">
+    import init from './web/ascii_snake.js'
+
+    init().catch((error) => {
+      if (!error.message.startsWith("Using exceptions for control flow, don't mind me. This isn't actually an error!")) {
+        throw error;
+      }
+    });
+  </script>
+</body>
+
 </html>
