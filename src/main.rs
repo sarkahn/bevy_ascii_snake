@@ -7,7 +7,7 @@ use bevy_ascii_terminal::*;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 
-const STAGE_SIZE: UVec2 = UVec2::from_array([20, 20]);
+const STAGE_SIZE: UVec2 = UVec2::from_array([28, 18]);
 const START_DIR: IVec2 = IVec2::Y;
 const BODY_GLYPH: char = '█';
 const FOOD_GLYPH: char = '☼';
